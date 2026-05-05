@@ -1,24 +1,34 @@
 (() => {
+  "use strict";
+
+  if (window.__AI_BOOKMARK_PRO_INIT__) return;
+  window.__AI_BOOKMARK_PRO_INIT__ = true;
+
   const browserAPI = typeof browser !== "undefined" ? browser : chrome;
 
-  let currentPath = location.pathname;
-  let currentHash = location.hash;
+  const ROOT_ID = "ai-query-bookmarks";
+  const NAV_EVENT = "ai-bookmark-navigation";
 
   let bookmarks = [];
-  let messageMap = new Map();
-  let textToBookmarkMap = new Map();
+  let textToElementMap = new Map();
+  let knownTexts = new Set();
 
   let container = null;
-  let header = null;
   let body = null;
   let searchInput = null;
   let list = null;
-
   let collapsed = false;
-  let isLoading = false;
 
   let conversationKey = getConversationKey();
-  let lastLoadKey = null;
+  let currentURL = location.href;
+
+  let observer = null;
+  let scanTimer = null;
+  let saveTimer = null;
+  let navigationTimer = null;
+
+  let isNavigating = false;
+  let isLoading = false;
 
   function getConversationKey() {
     return `ai_bookmarks_${location.hostname}_${location.pathname}_${location.hash}`;
@@ -26,46 +36,123 @@
 
   function init() {
     createUI();
-    loadBookmarksAndScan();
-    observeMessages();
-    watchURLChange();
+    patchNavigation();
+    bindNavigationEvents();
     setupToggleShortcut();
+    observeMessages();
+    loadCurrentChat();
 
     console.log("[AI Bookmark Pro] Initialized");
   }
 
-  function watchURLChange() {
-    setInterval(() => {
-      if (location.pathname !== currentPath || location.hash !== currentHash) {
-        currentPath = location.pathname;
-        currentHash = location.hash;
-        resetForNewConversation();
-      }
-    }, 500);
+  function patchNavigation() {
+    if (window.__AI_BOOKMARK_NAV_PATCHED__) return;
+    window.__AI_BOOKMARK_NAV_PATCHED__ = true;
+
+    ["pushState", "replaceState"].forEach(method => {
+      const original = history[method];
+
+      history[method] = function (...args) {
+        const result = original.apply(this, args);
+        window.dispatchEvent(new Event(NAV_EVENT));
+        return result;
+      };
+    });
   }
 
-  function resetForNewConversation() {
+  function bindNavigationEvents() {
+    const handleNavigation = () => {
+      if (location.href === currentURL) return;
+
+      currentURL = location.href;
+      startChatSwitch();
+    };
+
+    window.addEventListener(NAV_EVENT, handleNavigation);
+    window.addEventListener("popstate", handleNavigation);
+    window.addEventListener("hashchange", handleNavigation);
+
+    document.addEventListener(
+      "click",
+      () => {
+        setTimeout(handleNavigation, 50);
+        setTimeout(handleNavigation, 250);
+        setTimeout(handleNavigation, 700);
+      },
+      true
+    );
+  }
+
+  function startChatSwitch() {
+    isNavigating = true;
     isLoading = true;
+
+    clearTimeout(scanTimer);
+    clearTimeout(saveTimer);
+    clearTimeout(navigationTimer);
 
     conversationKey = getConversationKey();
     bookmarks = [];
-
-    messageMap.clear();
-    textToBookmarkMap.clear();
+    textToElementMap.clear();
+    knownTexts.clear();
 
     if (list) list.innerHTML = "";
     if (searchInput) searchInput.value = "";
 
-    lastLoadKey = null;
-    loadBookmarksAndScan();
+    navigationTimer = setTimeout(() => {
+      loadCurrentChat();
+    }, 600);
+  }
+
+  function loadCurrentChat() {
+    const key = getConversationKey();
+
+    conversationKey = key;
+    isLoading = true;
+
+    browserAPI.storage.local.get(key, result => {
+      if (key !== getConversationKey()) return;
+
+      bookmarks = Array.isArray(result[key]) ? result[key] : [];
+
+      textToElementMap.clear();
+      knownTexts.clear();
+
+      bookmarks.forEach(bookmark => {
+        if (bookmark?.text) knownTexts.add(bookmark.text);
+      });
+
+      renderBookmarks();
+
+      isLoading = false;
+      isNavigating = false;
+
+      retryScanForNewChat();
+    });
+  }
+
+  function retryScanForNewChat() {
+    let attempts = 0;
+
+    const run = () => {
+      if (getConversationKey() !== conversationKey) return;
+
+      attempts += 1;
+      scanMessages();
+
+      if (attempts < 10) {
+        setTimeout(run, 500);
+      }
+    };
+
+    setTimeout(run, 300);
   }
 
   function createUI() {
-    const existing = document.getElementById("ai-query-bookmarks");
+    const existing = document.getElementById(ROOT_ID);
 
     if (existing) {
       container = existing;
-      header = existing.querySelector("#bookmark-header");
       body = existing.querySelector("#bookmark-body");
       searchInput = existing.querySelector("#bookmark-search");
       list = existing.querySelector("#bookmark-list");
@@ -73,9 +160,9 @@
     }
 
     container = document.createElement("div");
-    container.id = "ai-query-bookmarks";
+    container.id = ROOT_ID;
 
-    header = document.createElement("div");
+    const header = document.createElement("div");
     header.id = "bookmark-header";
 
     const title = document.createElement("span");
@@ -84,36 +171,32 @@
 
     const collapseButton = document.createElement("button");
     collapseButton.id = "bookmark-collapse";
+    collapseButton.type = "button";
     collapseButton.textContent = ">";
-    collapseButton.title = "Collapse bookmarks";
 
     collapseButton.addEventListener("click", () => {
       collapsed = !collapsed;
       updateCollapseState();
     });
 
-    header.appendChild(title);
-    header.appendChild(collapseButton);
+    header.append(title, collapseButton);
 
     body = document.createElement("div");
     body.id = "bookmark-body";
 
     searchInput = document.createElement("input");
     searchInput.id = "bookmark-search";
-    searchInput.type = "text";
+    searchInput.type = "search";
     searchInput.placeholder = "Search bookmarks...";
+    searchInput.autocomplete = "off";
 
     searchInput.addEventListener("input", filterBookmarks);
 
     list = document.createElement("div");
     list.id = "bookmark-list";
 
-    body.appendChild(searchInput);
-    body.appendChild(list);
-
-    container.appendChild(header);
-    container.appendChild(body);
-
+    body.append(searchInput, list);
+    container.append(header, body);
     document.body.appendChild(container);
 
     updateCollapseState();
@@ -121,62 +204,14 @@
 
   function updateCollapseState() {
     const collapseButton = document.getElementById("bookmark-collapse");
-
-    if (!body || !collapseButton || !container) return;
+    if (!container || !body || !collapseButton) return;
 
     container.classList.toggle("collapsed", collapsed);
-
-    if (collapsed) {
-      body.setAttribute("aria-hidden", "true");
-    } else {
-      body.setAttribute("aria-hidden", "false");
-    }
+    body.setAttribute("aria-hidden", collapsed ? "true" : "false");
 
     collapseButton.textContent = collapsed ? "<" : ">";
-    collapseButton.setAttribute(
-      "aria-label",
-      collapsed ? "Expand bookmarks" : "Collapse bookmarks"
-    );
     collapseButton.title = collapsed ? "Expand bookmarks" : "Collapse bookmarks";
-  }
-
-  function saveBookmarks() {
-    browserAPI.storage.local.set({
-      [conversationKey]: bookmarks
-    });
-  }
-
-  function loadBookmarksAndScan() {
-    const keyToLoad = conversationKey;
-
-    lastLoadKey = keyToLoad;
-    isLoading = true;
-
-    browserAPI.storage.local.get(keyToLoad, result => {
-      if (lastLoadKey !== keyToLoad) return;
-
-      bookmarks = Array.isArray(result[keyToLoad])
-        ? result[keyToLoad]
-        : [];
-
-      bookmarks.forEach(bookmark => {
-        const msg = findMessageByText(bookmark.text);
-
-        if (msg) {
-          createBookmarkItem(
-            msg,
-            bookmark.text,
-            Boolean(bookmark.starred),
-            false
-          );
-        }
-      });
-
-      sortBookmarksUI();
-      scanMessages();
-
-      isLoading = false;
-    });
+    collapseButton.setAttribute("aria-label", collapseButton.title);
   }
 
   function getUserMessages() {
@@ -204,76 +239,133 @@
   }
 
   function getMessageText(element) {
-    return element?.innerText?.trim() || "";
+    return (element?.innerText || element?.textContent || "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function scanMessages() {
+    if (isLoading || isNavigating) return;
+    if (getConversationKey() !== conversationKey) return;
+
+    const messages = getUserMessages();
+    let changed = false;
+
+    messages.forEach(message => {
+      const text = getMessageText(message);
+      if (!text) return;
+
+      textToElementMap.set(text, message);
+
+      if (knownTexts.has(text)) return;
+
+      knownTexts.add(text);
+
+      bookmarks.push({
+        text,
+        starred: false
+      });
+
+      changed = true;
+    });
+
+    if (changed) {
+      renderBookmarks();
+      saveBookmarks();
+    } else {
+      filterBookmarks();
+    }
+  }
+
+  function saveBookmarks() {
+    if (isLoading || isNavigating) return;
+
+    const key = conversationKey;
+    const data = [...bookmarks];
+
+    clearTimeout(saveTimer);
+
+    saveTimer = setTimeout(() => {
+      if (key !== getConversationKey()) return;
+
+      browserAPI.storage.local.set({
+        [key]: data
+      });
+    }, 250);
+  }
+
+  function renderBookmarks() {
+    if (!list) return;
+
+    list.innerHTML = "";
+
+    const sorted = [...bookmarks].sort((a, b) => {
+      return Number(Boolean(b.starred)) - Number(Boolean(a.starred));
+    });
+
+    sorted.forEach(bookmark => {
+      if (!bookmark?.text) return;
+
+      const item = document.createElement("div");
+      item.className = "bookmark-card";
+      item.dataset.text = bookmark.text.toLowerCase();
+
+      if (bookmark.starred) item.classList.add("starred");
+
+      const label = document.createElement("span");
+      label.className = "bookmark-label";
+      label.textContent =
+        bookmark.text.length > 80
+          ? `${bookmark.text.slice(0, 80)}...`
+          : bookmark.text;
+      label.title = bookmark.text;
+
+      const star = document.createElement("span");
+      star.className = "bookmark-star";
+      star.textContent = bookmark.starred ? "★" : "☆";
+      star.title = "Toggle star";
+
+      star.addEventListener("click", event => {
+        event.stopPropagation();
+
+        bookmark.starred = !bookmark.starred;
+        renderBookmarks();
+        saveBookmarks();
+      });
+
+      item.addEventListener("click", () => {
+        scrollToBookmark(bookmark.text);
+      });
+
+      item.append(label, star);
+      list.appendChild(item);
+    });
+
+    filterBookmarks();
+  }
+
+  function scrollToBookmark(text) {
+    let message = textToElementMap.get(text);
+
+    if (!message || !document.body.contains(message)) {
+      message = findMessageByText(text);
+    }
+
+    if (!message) {
+      retryScanForNewChat();
+      return;
+    }
+
+    textToElementMap.set(text, message);
+
+    message.scrollIntoView({
+      behavior: "smooth",
+      block: "center"
+    });
   }
 
   function findMessageByText(text) {
-    return getUserMessages().find(msg => getMessageText(msg) === text);
-  }
-
-  function createBookmarkItem(messageElement, text, starred = false, save = true) {
-    if (!list || !text || textToBookmarkMap.has(text)) return;
-
-    const item = document.createElement("div");
-    item.className = "bookmark-card";
-    item.dataset.text = text.toLowerCase();
-
-    if (starred) {
-      item.classList.add("starred");
-    }
-
-    const label = document.createElement("span");
-    label.className = "bookmark-label";
-    label.textContent = text.length > 80 ? `${text.slice(0, 80)}...` : text;
-    label.title = text;
-
-    const star = document.createElement("span");
-    star.className = "bookmark-star";
-    star.textContent = starred ? "★" : "☆";
-    star.title = "Toggle star";
-
-    star.addEventListener("click", event => {
-      event.stopPropagation();
-
-      const isStarred = item.classList.toggle("starred");
-      star.textContent = isStarred ? "★" : "☆";
-
-      bookmarks = bookmarks.map(bookmark =>
-        bookmark.text === text
-          ? { ...bookmark, starred: isStarred }
-          : bookmark
-      );
-
-      sortBookmarksUI();
-      filterBookmarks();
-      saveBookmarks();
-    });
-
-    item.addEventListener("click", () => {
-      messageElement.scrollIntoView({
-        behavior: "smooth",
-        block: "center"
-      });
-    });
-
-    item.appendChild(label);
-    item.appendChild(star);
-
-    list.appendChild(item);
-
-    messageMap.set(messageElement, item);
-    textToBookmarkMap.set(text, item);
-
-    if (save) {
-      bookmarks.push({
-        text,
-        starred
-      });
-
-      saveBookmarks();
-    }
-
-    filterBookmarks();
+    return getUserMessages().find(message => getMessageText(message) === text);
   }
 
   function filterBookmarks() {
@@ -282,51 +374,22 @@
     const query = searchInput.value.trim().toLowerCase();
 
     Array.from(list.children).forEach(item => {
-      const text = item.dataset.text || "";
-      item.style.display = text.includes(query) ? "flex" : "none";
-    });
-  }
-
-  function sortBookmarksUI() {
-    if (!list) return;
-
-    const items = Array.from(list.children);
-
-    items.sort((a, b) => {
-      const aStarred = a.classList.contains("starred");
-      const bStarred = b.classList.contains("starred");
-
-      return Number(bStarred) - Number(aStarred);
-    });
-
-    items.forEach(item => list.appendChild(item));
-  }
-
-  function scanMessages() {
-    const messages = getUserMessages();
-
-    messages.forEach(msg => {
-      if (messageMap.has(msg)) return;
-
-      const text = getMessageText(msg);
-
-      if (!text || textToBookmarkMap.has(text)) return;
-
-      createBookmarkItem(msg, text, false, true);
+      item.style.display = item.dataset.text.includes(query) ? "flex" : "none";
     });
   }
 
   function observeMessages() {
-    let scanTimeout;
+    if (observer) observer.disconnect();
 
-    const observer = new MutationObserver(() => {
-      if (isLoading) return;
+    observer = new MutationObserver(() => {
+      if (location.href !== currentURL) {
+        currentURL = location.href;
+        startChatSwitch();
+        return;
+      }
 
-      clearTimeout(scanTimeout);
-
-      scanTimeout = setTimeout(() => {
-        scanMessages();
-      }, 300);
+      clearTimeout(scanTimer);
+      scanTimer = setTimeout(scanMessages, 300);
     });
 
     observer.observe(document.body, {
@@ -337,15 +400,25 @@
 
   function setupToggleShortcut() {
     document.addEventListener("keydown", event => {
-      if (event.altKey && event.key.toLowerCase() === "b") {
-        collapsed = !collapsed;
-        updateCollapseState();
-      }
+      if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.key.toLowerCase() !== "b") return;
+      if (isTyping(event.target)) return;
+
+      event.preventDefault();
+
+      collapsed = !collapsed;
+      updateCollapseState();
     });
   }
 
+  function isTyping(target) {
+    return Boolean(
+      target?.closest?.("input, textarea, select, [contenteditable='true'], [role='textbox']")
+    );
+  }
+
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
+    document.addEventListener("DOMContentLoaded", init, { once: true });
   } else {
     init();
   }

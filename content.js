@@ -4,7 +4,17 @@
   if (window.__AI_BOOKMARK_PRO_INIT__) return;
   window.__AI_BOOKMARK_PRO_INIT__ = true;
 
-  const browserAPI = typeof browser !== "undefined" ? browser : chrome;
+  const browserAPI =
+    typeof browser !== "undefined"
+      ? browser
+      : typeof chrome !== "undefined"
+        ? chrome
+        : null;
+
+  if (!browserAPI?.storage?.local) {
+    console.warn("[AI Bookmark Pro] Storage API unavailable");
+    return;
+  }
 
   const ROOT_ID = "ai-query-bookmarks";
   const NAV_EVENT = "ai-bookmark-navigation";
@@ -45,6 +55,67 @@
     console.log("[AI Bookmark Pro] Initialized");
   }
 
+  function createUI() {
+    const existing = document.getElementById(ROOT_ID);
+    if (existing) existing.remove();
+
+    container = document.createElement("div");
+    container.id = ROOT_ID;
+
+    const header = document.createElement("div");
+    header.id = "bookmark-header";
+
+    const title = document.createElement("span");
+    title.id = "bookmark-title";
+    title.textContent = "Bookmarks";
+
+    const collapseButton = document.createElement("button");
+    collapseButton.id = "bookmark-collapse";
+    collapseButton.type = "button";
+    collapseButton.textContent = ">";
+
+    collapseButton.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      collapsed = !collapsed;
+      updateCollapseState();
+    });
+
+    header.append(title, collapseButton);
+
+    body = document.createElement("div");
+    body.id = "bookmark-body";
+
+    searchInput = document.createElement("input");
+    searchInput.id = "bookmark-search";
+    searchInput.type = "search";
+    searchInput.placeholder = "Search bookmarks...";
+    searchInput.autocomplete = "off";
+
+    searchInput.addEventListener("input", filterBookmarks);
+
+    list = document.createElement("div");
+    list.id = "bookmark-list";
+
+    body.append(searchInput, list);
+    container.append(header, body);
+    document.body.appendChild(container);
+
+    updateCollapseState();
+  }
+
+  function updateCollapseState() {
+    const collapseButton = document.getElementById("bookmark-collapse");
+    if (!container || !body || !collapseButton) return;
+
+    container.classList.toggle("collapsed", collapsed);
+    body.setAttribute("aria-hidden", collapsed ? "true" : "false");
+
+    collapseButton.textContent = collapsed ? "<" : ">";
+    collapseButton.title = collapsed ? "Expand bookmarks" : "Collapse bookmarks";
+    collapseButton.setAttribute("aria-label", collapseButton.title);
+  }
+
   function patchNavigation() {
     if (window.__AI_BOOKMARK_NAV_PATCHED__) return;
     window.__AI_BOOKMARK_NAV_PATCHED__ = true;
@@ -75,9 +146,9 @@
     document.addEventListener(
       "click",
       () => {
-        setTimeout(handleNavigation, 50);
-        setTimeout(handleNavigation, 250);
-        setTimeout(handleNavigation, 700);
+        setTimeout(handleNavigation, 80);
+        setTimeout(handleNavigation, 300);
+        setTimeout(handleNavigation, 800);
       },
       true
     );
@@ -99,9 +170,7 @@
     if (list) list.innerHTML = "";
     if (searchInput) searchInput.value = "";
 
-    navigationTimer = setTimeout(() => {
-      loadCurrentChat();
-    }, 600);
+    navigationTimer = setTimeout(loadCurrentChat, 700);
   }
 
   function loadCurrentChat() {
@@ -146,72 +215,6 @@
     };
 
     setTimeout(run, 300);
-  }
-
-  function createUI() {
-    const existing = document.getElementById(ROOT_ID);
-
-    if (existing) {
-      container = existing;
-      body = existing.querySelector("#bookmark-body");
-      searchInput = existing.querySelector("#bookmark-search");
-      list = existing.querySelector("#bookmark-list");
-      return;
-    }
-
-    container = document.createElement("div");
-    container.id = ROOT_ID;
-
-    const header = document.createElement("div");
-    header.id = "bookmark-header";
-
-    const title = document.createElement("span");
-    title.id = "bookmark-title";
-    title.textContent = "Bookmarks";
-
-    const collapseButton = document.createElement("button");
-    collapseButton.id = "bookmark-collapse";
-    collapseButton.type = "button";
-    collapseButton.textContent = ">";
-
-    collapseButton.addEventListener("click", () => {
-      collapsed = !collapsed;
-      updateCollapseState();
-    });
-
-    header.append(title, collapseButton);
-
-    body = document.createElement("div");
-    body.id = "bookmark-body";
-
-    searchInput = document.createElement("input");
-    searchInput.id = "bookmark-search";
-    searchInput.type = "search";
-    searchInput.placeholder = "Search bookmarks...";
-    searchInput.autocomplete = "off";
-
-    searchInput.addEventListener("input", filterBookmarks);
-
-    list = document.createElement("div");
-    list.id = "bookmark-list";
-
-    body.append(searchInput, list);
-    container.append(header, body);
-    document.body.appendChild(container);
-
-    updateCollapseState();
-  }
-
-  function updateCollapseState() {
-    const collapseButton = document.getElementById("bookmark-collapse");
-    if (!container || !body || !collapseButton) return;
-
-    container.classList.toggle("collapsed", collapsed);
-    body.setAttribute("aria-hidden", collapsed ? "true" : "false");
-
-    collapseButton.textContent = collapsed ? "<" : ">";
-    collapseButton.title = collapsed ? "Expand bookmarks" : "Collapse bookmarks";
-    collapseButton.setAttribute("aria-label", collapseButton.title);
   }
 
   function getUserMessages() {

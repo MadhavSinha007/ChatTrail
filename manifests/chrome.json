@@ -1,17 +1,9 @@
 {
   "manifest_version": 3,
   "name": "AI Bookmark Pro",
-  "version": "2.1",
-  "description": "Professional AI chat bookmark system.",
+  "version": "2.1.0",
+  "description": "Automatically bookmarks your AI chat prompts in a lightweight sidebar.",
   "permissions": ["storage"],
-  "background": {
-    "service_worker": "background.js"
-  },
-  "icons": {
-    "16": "icons/icon16.png",
-    "48": "icons/icon48.png",
-    "128": "icons/icon128.png"
-  },
   "content_scripts": [
     {
       "matches": [
@@ -25,10 +17,9 @@
       "run_at": "document_idle"
     }
   ],
-  "web_accessible_resources": [
-    {
-      "resources": ["icons/*.png"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
 }

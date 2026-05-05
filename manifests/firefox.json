@@ -6,7 +6,7 @@
   "permissions": ["storage"],
   "browser_specific_settings": {
     "gecko": {
-      "id": "ai-bookmark-pro@example.com",
+      "id": "{ai-bookmark-pro}",
       "strict_min_version": "109.0"
     }
   },

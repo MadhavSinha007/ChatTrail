@@ -31,6 +31,7 @@
 
   let conversationKey = getConversationKey();
   let currentURL = location.href;
+  let previousSnapshot = "";
 
   let observer = null;
   let scanTimer = null;
@@ -41,7 +42,7 @@
   let isLoading = false;
 
   function getConversationKey() {
-    return `chattrail_${location.hostname}_${location.pathname}_${location.hash}`;
+    return `chattrail_${location.hostname}_${location.pathname}_${location.search}_${location.hash}`;
   }
 
   function init() {
@@ -50,7 +51,7 @@
     bindNavigationEvents();
     setupToggleShortcut();
     observeMessages();
-    loadCurrentChat();
+    loadCurrentChat(true);
 
     console.log("[ChatTrail] Initialized");
   }
@@ -135,6 +136,7 @@
     const handleNavigation = () => {
       if (location.href === currentURL) return;
 
+      previousSnapshot = getVisibleMessageSnapshot();
       currentURL = location.href;
       startChatSwitch();
     };
@@ -170,10 +172,38 @@
     if (list) list.innerHTML = "";
     if (searchInput) searchInput.value = "";
 
-    navigationTimer = setTimeout(loadCurrentChat, 700);
+    waitForNewChatThenLoad();
   }
 
-  function loadCurrentChat() {
+  function waitForNewChatThenLoad() {
+    let attempts = 0;
+
+    const check = () => {
+      attempts += 1;
+
+      const currentKey = getConversationKey();
+      const currentSnapshot = getVisibleMessageSnapshot();
+
+      if (currentKey !== conversationKey) {
+        conversationKey = currentKey;
+      }
+
+      const hasNoMessages = currentSnapshot.length === 0;
+      const chatChanged = currentSnapshot && currentSnapshot !== previousSnapshot;
+      const timedOut = attempts >= 16;
+
+      if (chatChanged || hasNoMessages || timedOut) {
+        loadCurrentChat(false);
+        return;
+      }
+
+      navigationTimer = setTimeout(check, 250);
+    };
+
+    navigationTimer = setTimeout(check, 250);
+  }
+
+  function loadCurrentChat(allowImmediateScan) {
     const key = getConversationKey();
 
     conversationKey = key;
@@ -196,7 +226,11 @@
       isLoading = false;
       isNavigating = false;
 
-      retryScanForNewChat();
+      if (allowImmediateScan) {
+        scheduleScan(300);
+      } else {
+        retryScanForNewChat();
+      }
     });
   }
 
@@ -209,7 +243,7 @@
       attempts += 1;
       scanMessages();
 
-      if (attempts < 10) {
+      if (attempts < 8) {
         setTimeout(run, 500);
       }
     };
@@ -245,6 +279,13 @@
     return (element?.innerText || element?.textContent || "")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function getVisibleMessageSnapshot() {
+    return getUserMessages()
+      .map(message => getMessageText(message))
+      .filter(Boolean)
+      .join("||");
   }
 
   function scanMessages() {
@@ -386,6 +427,7 @@
 
     observer = new MutationObserver(() => {
       if (location.href !== currentURL) {
+        previousSnapshot = getVisibleMessageSnapshot();
         currentURL = location.href;
         startChatSwitch();
         return;
@@ -399,6 +441,11 @@
       childList: true,
       subtree: true
     });
+  }
+
+  function scheduleScan(delay = 300) {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(scanMessages, delay);
   }
 
   function setupToggleShortcut() {

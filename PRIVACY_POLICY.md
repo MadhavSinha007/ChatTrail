@@ -34,5 +34,5 @@ ChatTrail requests storage permission only to save bookmarks locally in your bro
 
 For questions, contact:
 
-- fakeggod810@gmail.com
+- fakegod810@gmail.com
 - gooseyns@gmail.com
